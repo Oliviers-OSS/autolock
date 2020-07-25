@@ -1,0 +1,18 @@
+[Unit]
+Description=Autolock Session Service
+Requires=syslog.service
+After=syslog.service 
+
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=@prefix@/sbin/autolock
+;Restart=
+;User=%i
+;Group=%i
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target
+

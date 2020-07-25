@@ -1,0 +1,8 @@
+log_level=notice
+max_idle_duration_in_minutes=10
+	
+[locker]
+;program_run_account=
+program_with_parameters=/usr/bin/sleep 100
+max_number_of_restart_on_failure=1
+run_on_startup=true

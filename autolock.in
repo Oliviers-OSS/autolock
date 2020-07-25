@@ -1,0 +1,11 @@
+#!/bin/sh
+
+if [ "x$1" = "x-x" ] ; then
+	set -x
+	shift
+fi
+
+GREP=/usr/bin/grep
+device=`$GREP -E 'Handlers|EV=' /proc/bus/input/devices | $GREP -B1 'EV=1[02]001[3Ff]' | $GREP -Eo 'event[0-9]+'` 
+@prefix@/sbin/autolockd -d $device $*
+
