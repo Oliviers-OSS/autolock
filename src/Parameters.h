@@ -29,10 +29,13 @@
 
 #define PROGNAME PACKAGE
 #define CONFIGURATION_DIR TO_STRING(_CONFIGDIR)
+#define VT_NOT_SET ((unsigned int)-1)
 
 #define MODE(m)  X(m)
 #define MODE_TABLE \
 		MODE(LockOnStartup) \
+		MODE(RunInTerminal) \
+		MODE(SwitchTerminal) \
 		MODE(Console)
 
 #define X(m)    ev_##m,
@@ -47,15 +50,14 @@ typedef enum ModeValue_ {
 } ModeValue;
 #undef X
 
-/*
-inline const char* to_string(const ModeValue m) {
-#define X(m)	case m: return TO_STRING(m);
+static inline const char* to_string(const ModeValue m) {
+#define X(m)	case e_##m: return TO_STRING(m);
 	switch(m) {
 	MODE_TABLE
 	}
 #undef X
 	return "";
-}*/
+}
 
 #define SET_STRING_MEMBER(m) int set_##m(const char *s) { \
 		if (!is_set(e_##m)) { \
@@ -65,7 +67,7 @@ inline const char* to_string(const ModeValue m) {
 		return EXIT_SUCCESS; \
 }
 
-#define GET_STRING_MEMBER(m) const char * get_##m() { \
+#define GET_STRING_MEMBER(m) const char * get_##m() const { \
 		return m.c_str(); \
 }
 
@@ -81,7 +83,7 @@ inline const char* to_string(const ModeValue m) {
 		} \
 		return error; \
 }
-#define GET_UINT_MEMBER(m) unsigned int get_##m() { \
+#define GET_UINT_MEMBER(m) unsigned int get_##m() const { \
 		return m; \
 }
 
@@ -195,7 +197,7 @@ struct Parameters
 
 	int set_mode(const char*v) {
 		int error = EXIT_SUCCESS;
-		if (!is_set(e_modes)) {
+		//if (!is_set(e_modes)) { //TODO: better mode flag management between cmd line and config file parameter ? current is add both of them
 #define X(m)	if (strcasecmp(TO_STRING(m),v)==0) { modes |= e_##m; DEBUG_MSG("Mode %s enabled",v); } else
 			MODE_TABLE
 #undef X
@@ -203,13 +205,28 @@ struct Parameters
 				ERROR_MSG("Unknown mode %s",v);
 				error = EINVAL;
 			}
-		}
+		//}
 		return error;
 	}
 
 	int set_syslogLevel(const char*level);
 	int loadConfigurationFile();
 	bool isValid(std::string &errorMsg);
+
+	bool is_mode_set(const ModeValue mode) const {
+		return ((modes & mode) == mode);
+	}
+
+	int set_mode(const ModeValue mode) {
+		modes |= mode;
+		//set(e_modes);
+		return EXIT_SUCCESS;
+	}
+
+	int unset_mode(ModeValue mode) {
+		modes &= ~mode;
+		return EXIT_SUCCESS;
+	}
 };
 
 #undef MEMBER

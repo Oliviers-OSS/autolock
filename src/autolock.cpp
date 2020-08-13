@@ -16,8 +16,10 @@
 #include <sys/types.h>
 #include <sys/epoll.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
 #include <linux/limits.h>
 #include <linux/input.h>
+#include <linux/vt.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <getopt.h>
@@ -35,6 +37,8 @@
 		O(time,t,"=<time> duration (in minutes) without activity before starting program",NEED_ARG) \
 		O(program,p,"=<program> locker program and its parameters to start",NEED_ARG) \
 		O(user,u,"=<loginname> user account locker program to use",NEED_ARG) \
+		O(terminal,T,"Run the locker program inside a terminal",NO_ARG) \
+		O(switch-terminal,S,"Switch to the locker program terminal (for debug purpose)",NO_ARG) \
 		O(lock-now,L," run the locker program at startup",NO_ARG) \
 		O(failure-restart,r,"=<max> restart the locker program up to max times in case of failure",NEED_ARG) \
 		O(configuration-file,c,"=<file> set configuration file to use",NEED_ARG) \
@@ -112,8 +116,14 @@ static int parseCmdLine(int argc, char *argv[], Parameters &parameters)
 			case 't':
 				error = parameters.set_duration(optarg);
 				break;
+			case 'T':
+				error = parameters.set_mode(e_RunInTerminal);
+				break;
+			case 'S':
+				error = parameters.set_mode(e_SwitchTerminal);
+				break;
 			case 'L':
-				parameters.modes |= e_LockOnStartup;
+				error = parameters.set_mode(e_LockOnStartup);
 				break;
 			case 'l':
 				error = parameters.set_syslogLevel(optarg);
@@ -122,7 +132,7 @@ static int parseCmdLine(int argc, char *argv[], Parameters &parameters)
 				error = parameters.set_configurationFile(optarg);
 				break;
 			case 'C':
-				parameters.modes |= e_Console;
+				error = parameters.set_mode(e_Console);
 				break;
 			case 'h':
 				printHelp(NULL);
@@ -202,6 +212,85 @@ int __attribute__((warn_unused_result)) impersonate(const char *username) {
 	return error;
 }
 
+static int moveToTerminal(bool switchTerminal = false) {
+	int error = EXIT_SUCCESS;
+	const bool noTerminalSwitch(!switchTerminal);
+	const char *ttyDevice0 = "/dev/tty0";
+	int tty0 = open(ttyDevice0,O_RDWR);
+	if (likely(tty0 != -1)) {
+		int number = -1;
+		if (likely(ioctl(tty0, VT_OPENQRY, &number) == 0)) {
+			DEBUG_VAR(number,"%d");
+			char ttyDevice[PATH_MAX];
+			sprintf(ttyDevice,"/dev/tty%u",number);
+			int tty = open(ttyDevice,O_RDWR);
+			if (likely(tty != -1)) {
+				int force = 1;
+				if (likely(ioctl(tty, TIOCSCTTY, force) == 0)) {
+					/* terminal move */
+					if (likely( noTerminalSwitch || (ioctl(tty,VT_ACTIVATE,number) == 0))) {
+						DEBUG_MSG("Waiting for vt %u activation...",number);
+						if (likely( noTerminalSwitch || (ioctl(tty,VT_WAITACTIVE,number) == 0))) {
+							DEBUG_MSG("VT %u activated",number);
+							close(STDIN_FILENO);
+							close(STDOUT_FILENO);
+							close(STDERR_FILENO);
+							if (likely(dup2(tty, STDIN_FILENO) != -1)) {
+								if (likely(dup2(tty, STDOUT_FILENO) != -1)) {
+									if (likely(dup2(tty, STDERR_FILENO) != -1)) {
+										struct vt_mode vtm;
+										if (ioctl(STDIN_FILENO, VT_GETMODE, &vtm) != 0) {
+											if (errno == ENOTTY || errno == EINVAL) {
+												syslog(LOG_ERR, "this terminal is not a virtual console");
+											} else {
+												syslog(LOG_ERR,"could not get virtual console mode");
+											}
+										} else {
+											syslog(LOG_DEBUG,"VT stdin check OK");
+										}
+									} else {
+										error = errno;
+										ERROR_MSG("dup2 STDERR_FILENO error %d (%m)",error);
+									}
+								} else {
+									error = errno;
+									ERROR_MSG("dup2 STDOUT_FILENO error %d (%m)",error);
+								}
+							} else {
+								error = errno;
+								ERROR_MSG("dup2 STDIN_FILENO error %d (%m)",error);
+							}
+						} else {
+							error = errno;
+							ERROR_MSG("ioctl VT_WAITACTIVE %d error %d (%m)",number,error);
+						}
+					} else {
+						error = errno;
+						ERROR_MSG("ioctl VT_ACTIVATE %d error %d (%m)",number,error);
+					}
+				} else {
+					error = errno;
+					ERROR_MSG("ioctl TIOCSCTTY %d, force = %d error %d (%m)",number,force,error);
+				}
+				close(tty);
+				tty = -1;
+			} else {
+				error = errno;
+				ERROR_MSG("open %s error %d (%m)",ttyDevice,error);
+			}
+		} else {
+			error = errno;
+			ERROR_MSG("ioctl VT_OPENQRY %d error %d (%m)",number,error);
+		}
+		close(tty0);
+		tty0 = -1;
+	} else {
+		error = errno;
+		ERROR_MSG("open %s error %d (%m)",ttyDevice0,error);
+	}
+	return error;
+}
+
 static int runLocker(const Parameters &parameters,unsigned int nb_failures = 0) {
 	int error = EXIT_SUCCESS;
 	const char *program = parameters.argv[0];
@@ -233,28 +322,36 @@ static int runLocker(const Parameters &parameters,unsigned int nb_failures = 0) 
 		}
 	} else if (0 == pid) {
 		/* child */
-		if (!parameters.user.empty()) {
-			error = impersonate(parameters.user.c_str());
-			if (unlikely(error != EXIT_SUCCESS)) {
-				ERROR_MSG("impersonate %s error %d",parameters.user.c_str(),error);
-			}
-		}
-
-		const uid_t euid = geteuid();
-		if (0 == euid) {
-			//TODO
-			TODO(Capabilities management);
-			WARNING_MSG("Program %s will be started as root (without any capabilities)",program);
-			//error = dropAllCapabilities();
+		pid_t sid = setsid();
+		DEBUG_VAR(sid,"%u");
+		if (parameters.is_mode_set(e_RunInTerminal)) {
+			error = moveToTerminal(parameters.is_mode_set(e_SwitchTerminal));
 		}
 
 		if (likely(EXIT_SUCCESS == error)) {
-			if(execvp(program,(char* const*)parameters.argv.data()) == -1) {
-				error = errno;
-				CRIT_MSG("execvp %s error %d (%m)",program,error);
+			if (!parameters.user.empty()) {
+				error = impersonate(parameters.user.c_str());
+				if (unlikely(error != EXIT_SUCCESS)) {
+					WARNING_MSG("impersonate %s error %d",parameters.user.c_str(),error);
+				}
 			}
-		} else {
-			ERROR_MSG("impersonate %s error %d",parameters.user.c_str(),error);
+
+			if (likely(EXIT_SUCCESS == error)) {
+				const uid_t euid = geteuid();
+				if (0 == euid) {
+					//TODO
+					TODO(Capabilities management);
+					WARNING_MSG("Program %s will be started as root (without any capabilities)",program);
+					//error = dropAllCapabilities();
+				}
+
+				if (likely(EXIT_SUCCESS == error)) {
+					if(execvp(program,(char* const*)parameters.argv.data()) == -1) {
+						error = errno;
+						CRIT_MSG("execvp %s error %d (%m)",program,error);
+					}
+				}
+			}
 		}
 	} else {
 		error = errno;
@@ -264,7 +361,7 @@ static int runLocker(const Parameters &parameters,unsigned int nb_failures = 0) 
 }
 
 static inline int getTime(struct timespec &t) {
-	int error= EXIT_SUCCESS;
+	int error = EXIT_SUCCESS;
 	if (unlikely(clock_gettime(CLOCK_MONOTONIC,&t) == -1)) {
 		error = errno;
 		ERROR_MSG("clock_gettime CLOCK_MONOTONIC error %d (%m)",error);
@@ -288,7 +385,7 @@ static void onSigTerm(int receivedSignal)
 TODO(syscall filter);
 
 static int autolock(const Parameters &parameters) {
-	int error= EXIT_SUCCESS;
+	int error = EXIT_SUCCESS;
 	char keyboardDevice[PATH_MAX];
 	snprintf(keyboardDevice,sizeof(keyboardDevice),"/dev/input/%s",parameters.device.c_str());
 	int fd = open(keyboardDevice,O_RDONLY);

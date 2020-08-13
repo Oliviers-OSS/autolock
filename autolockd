@@ -3,6 +3,9 @@ max_idle_duration_in_minutes=10
 	
 [locker]
 ;program_run_account=
-program_with_parameters=/usr/bin/sleep 100
+program_with_parameters=/usr/local/bin/vlock -u -a -k -s
 max_number_of_restart_on_failure=1
 run_on_startup=true
+run_in_terminal=true
+switch_terminal=false
+

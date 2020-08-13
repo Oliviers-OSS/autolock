@@ -86,6 +86,10 @@ int Parameters::set_syslogLevel(const char*level) {
 	return error;
 }
 
+static inline bool is_enabled(const char *value) {
+	return (('F' != value[0]) && ('f' != value[0]) && ('0' != value[0]));
+}
+
 static int handler(void* user, const char* section, const char* name,const char* value)
 {
 	int error = EXIT_SUCCESS;
@@ -99,9 +103,18 @@ static int handler(void* user, const char* section, const char* name,const char*
 	SET("locker","program_run_account",user)
 	SET("locker","program_with_parameters",program)
 	SET("locker","max_number_of_restart_on_failure",nbRestart)
-	if ((strcmp(section, "locker") == 0) && (strcmp(name, "run_on_startup") == 0)) {
-		if (('F' != value[0]) && ('f' != value[0]) && ('0' != value[0]))
+	if ((strcmp(section, "locker") == 0) && (strcmp(name, "run_in_terminal") == 0)) {
+		if (is_enabled(value)) {
+			error = pconfig->set_mode(e_RunInTerminal);
+		}
+	} else if ((strcmp(section, "locker") == 0) && (strcmp(name, "switch_terminal") == 0)) {
+		if (is_enabled(value)) {
+			error = pconfig->set_mode(e_SwitchTerminal);
+		}
+	} else if ((strcmp(section, "locker") == 0) && (strcmp(name, "run_on_startup") == 0)) {
+		if (is_enabled(value)) {
 			error = pconfig->set_mode("LockOnStartup");
+		}
 	} else {
 		WARNING_MSG("Unknown parameter %s in section %s (value = %s)",name,section,value);
 	}
